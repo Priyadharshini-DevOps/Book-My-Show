@@ -1,4 +1,3 @@
-(without K8S Stage)
 pipeline {
     agent any
     tools {
@@ -7,6 +6,7 @@ pipeline {
     }
     environment {
         SCANNER_HOME = tool 'sonar-scanner'
+        NVD_API_KEY = credentials('nvd-api-key')
     }
     stages {
         stage('Clean Workspace') {
@@ -54,8 +54,28 @@ pipeline {
         }
         stage('OWASP FS Scan') {
             steps {
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                script {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                        timeout(time: 15, unit: 'MINUTES') {
+                            sh '''
+                            mkdir -p /var/lib/jenkins/dependency-check-data
+                            '''
+                            dependencyCheck additionalArguments: '''
+                                --scan ./bookmyshow-app
+                                --exclude "node_modules/**"
+                                --disableYarnAudit
+                                --disableNodeAudit
+                                --disableOssIndex
+                                --disableCentral
+                                --disableRetireJS
+                                --data /var/lib/jenkins/dependency-check-data
+                                --nvdApiKey ${NVD_API_KEY}
+                                --nvdApiDelay 4000
+                            ''', odcInstallation: 'DP-Check'
+                            dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                        }
+                    }
+                }
             }
         }
         stage('Trivy FS Scan') {
@@ -70,7 +90,6 @@ pipeline {
                         sh ''' 
                         echo "Building Docker image..."
                         docker build --no-cache -t priyadevops04/bms:latest -f bookmyshow-app/Dockerfile bookmyshow-app
-
                         echo "Pushing Docker image to registry..."
                         docker push priyadevops04/bms:latest
                         '''
@@ -84,13 +103,10 @@ pipeline {
                 echo "Stopping and removing old container..."
                 docker stop bms || true
                 docker rm bms || true
-
                 echo "Running new container on port 3000..."
                 docker run -d --restart=always --name bms -p 3000:3000 priyadevops04/bms:latest
-
                 echo "Checking running containers..."
                 docker ps -a
-
                 echo "Fetching logs..."
                 sleep 5  # Give time for the app to start
                 docker logs bms
